@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aave v3 Flash Loan Arbitrage Bot</title>
-    <script src="https://cdn.ethers.io/lib/ethers-5.2.umd.min.js"></script>
+    <!-- Updated and more reliable CDN for ethers.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.2/ethers.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.34/Tone.js"></script>
     <style>
         :root {
@@ -239,6 +240,17 @@
 
         // --- INITIALIZATION ---
         window.addEventListener('load', () => {
+            // **FIX**: Check if ethers is loaded before running the app
+            if (typeof ethers === 'undefined') {
+                document.body.innerHTML = `<div style="color: red; font-family: sans-serif; padding: 20px; text-align: center;">
+                <h1>Critical Error: ethers.js not found</h1>
+                <p>The core library required for this application failed to load. This might be due to a network issue or an ad-blocker.</p>
+                <p>Please check your internet connection, disable any ad-blockers, and refresh the page.</p>
+                </div>`;
+                console.error("Ethers.js is not defined! The application cannot start.");
+                return;
+            }
+
             log('App loaded. Please connect your wallet.');
             document.getElementById('contractAddress').innerText = DEPLOYED_CONTRACT_ADDRESS;
             document.getElementById('activeDEXs').innerText = Object.keys(DEXS).join(', ');
@@ -246,6 +258,12 @@
                 oscillator: { type: 'square' },
                 envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
             }).toDestination();
+            
+            // --- EVENT LISTENERS ---
+            connectWalletBtn.addEventListener('click', connectWallet);
+            scanBtn.addEventListener('click', scanOpportunities);
+            autoScanBtn.addEventListener('click', toggleAutoScan);
+            executeTradeBtn.addEventListener('click', executeTrade);
         });
         
         // --- FUNCTIONS ---
@@ -343,7 +361,9 @@
 
             for (const opportunity of paths) {
                 try {
+                    // Use a generic router interface; the contract handles different DEXs
                     const dexRouter = new ethers.Contract(opportunity.routers[0], UNISWAP_V2_ROUTER_ABI, provider);
+                    // This call simulates the potential outcome of the first hop
                     const amountsOut = await dexRouter.getAmountsOut(loanAmount, opportunity.path);
                     const finalAmount = amountsOut[amountsOut.length - 1];
 
@@ -361,7 +381,7 @@
                         }
                     }
                 } catch (error) {
-                    // This is expected for invalid paths or DEX issues.
+                    // This is expected for invalid paths or DEX issues. We can ignore these errors.
                 }
                 
                 scannedCount++;
@@ -421,7 +441,13 @@
 
             try {
                 const loanAmount = ethers.utils.parseUnits(flashLoanAmountInput.value, 'ether');
-                const tx = await arbitrageContract.startArbitrage(loanAmount, bestTrade.path, bestTrade.routers);
+                // Estimate gas before sending
+                const gasEstimate = await arbitrageContract.estimateGas.startArbitrage(loanAmount, bestTrade.path, bestTrade.routers);
+                log(`Estimated gas: ${gasEstimate.toString()}`, 'info');
+
+                const tx = await arbitrageContract.startArbitrage(loanAmount, bestTrade.path, bestTrade.routers, {
+                    gasLimit: gasEstimate.mul(12).div(10) // Add 20% buffer
+                });
                 
                 log(`Transaction sent: ${tx.hash}`, 'info');
                 await tx.wait();
@@ -431,12 +457,12 @@
                 updateBestTradeUI();
 
             } catch (error) {
-                log(`Trade execution failed: ${error.message}`, 'error');
-                if (error.data && error.data.message) {
-                    log(`Reason: ${error.data.message}`, 'error');
-                }
+                log(`Trade execution failed: ${error.reason || error.message}`, 'error');
             } finally {
-                executeTradeBtn.disabled = false;
+                // Re-enable the button unless auto-scanning
+                if (!isAutoScanning) {
+                    executeTradeBtn.disabled = true; 
+                }
             }
         }
 
@@ -444,21 +470,17 @@
             if (isAutoScanning) {
                 isAutoScanning = false;
                 autoScanBtn.textContent = 'Auto-Scan';
+                autoScanBtn.style.backgroundColor = 'var(--accent-color)';
                 log('Auto-scanning stopped.');
                 autoScanCycles = 0;
             } else {
                 isAutoScanning = true;
                 autoScanBtn.textContent = 'Stop Auto-Scan';
+                autoScanBtn.style.backgroundColor = 'var(--error-color)';
                 log('Auto-scanning started...');
                 scanOpportunities();
             }
         }
-
-        // --- EVENT LISTENERS ---
-        connectWalletBtn.addEventListener('click', connectWallet);
-        scanBtn.addEventListener('click', scanOpportunities);
-        autoScanBtn.addEventListener('click', toggleAutoScan);
-        executeTradeBtn.addEventListener('click', executeTrade);
     </script>
 </body>
 </html>
