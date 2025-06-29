@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aave v3 Flash Loan Arbitrage Bot</title>
+    <script src="https://cdn.ethers.io/lib/ethers-5.2.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.34/Tone.js"></script>
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --primary-color: #2a2a2a;
+            --secondary-color: #3a3a3a;
+            --text-color: #e0e0e0;
+            --accent-color: #4a90e2;
+            --success-color: #7ed321;
+            --error-color: #d0021b;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .card {
+            background-color: var(--primary-color);
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        .card h2 {
+            margin-top: 0;
+            color: var(--accent-color);
+            border-bottom: 1px solid var(--secondary-color);
+            padding-bottom: 10px;
+        }
+        
+        button {
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: #357abd;
+        }
+        
+        button:disabled {
+            background-color: var(--secondary-color);
+            cursor: not-allowed;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 8px;
+            background-color: var(--secondary-color);
+            border: 1px solid var(--bg-color);
+            border-radius: 4px;
+            color: var(--text-color);
+            box-sizing: border-box;
+        }
+
+        .progress-bar {
+            width: 100%;
+            background-color: var(--secondary-color);
+            border-radius: 5px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .progress-bar-inner {
+            width: 0%;
+            height: 20px;
+            background-color: var(--accent-color);
+            text-align: center;
+            line-height: 20px;
+            color: white;
+            transition: width 0.4s;
+        }
+        
+        .status-log {
+            background-color: var(--bg-color);
+            border: 1px solid var(--secondary-color);
+            height: 200px;
+            overflow-y: auto;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.9em;
+        }
+        
+        .status-log .log-entry {
+            margin-bottom: 5px;
+        }
+        
+        .status-log .log-success { color: var(--success-color); }
+        .status-log .log-error { color: var(--error-color); }
+        .status-log .log-info { color: var(--text-color); }
+
+        .config-details span {
+            display: block;
+            margin-bottom: 10px;
+        }
+
+        .config-details .value {
+            color: var(--accent-color);
+            font-weight: bold;
+        }
+
+        @media (max-width: 900px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <!-- Left Column: Controls -->
+        <div class="card">
+            <h2>Controls</h2>
+            <button id="connectWalletBtn">Connect Wallet</button>
+            <hr style="border-color: var(--secondary-color); margin: 20px 0;">
+
+            <div class="form-group">
+                <label for="flashLoanAmount">Flash Loan Amount (WETH)</label>
+                <input type="number" id="flashLoanAmount" value="100">
+            </div>
+            <div class="form-group">
+                <label for="minProfitPercentage">Min Profit %</label>
+                <input type="number" id="minProfitPercentage" value="0.1">
+            </div>
+            <div class="form-group">
+                <label for="slippagePercentage">Slippage %</label>
+                <input type="number" id="slippagePercentage" value="0.5">
+            </div>
+            
+            <button id="scanBtn">Scan All Combos</button>
+            <button id="autoScanBtn">Auto-Scan</button>
+            <button id="executeTradeBtn" disabled>Execute Best Trade</button>
+
+            <div class="progress-bar">
+                <div id="progressBar" class="progress-bar-inner">0%</div>
+            </div>
+
+            <h2>Status Log</h2>
+            <div id="statusLog" class="status-log"></div>
+        </div>
+
+        <!-- Right Column: Configuration Details -->
+        <div class="card">
+            <h2>Configuration</h2>
+            <div class="config-details">
+                <span>Contract Address: <span id="contractAddress" class="value">Not Set</span></span>
+                <span>Network Status: <span id="networkStatus" class="value">Disconnected</span></span>
+                <span>Gas Price (Gwei): <span id="gasPrice" class="value">...</span></span>
+                <span>Active DEXs: <span id="activeDEXs" class="value">...</span></span>
+                <hr style="border-color: var(--secondary-color); margin: 20px 0;">
+                <h2>Best Opportunity</h2>
+                <span>Path: <span id="bestPath" class="value">N/A</span></span>
+                <span>Expected Profit (WETH): <span id="bestProfit" class="value">N/A</span></span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const DEPLOYED_CONTRACT_ADDRESS = "YOUR_ETHEREUM_CONTRACT_ADDRESS_HERE";
+        const ETHEREUM_CHAIN_ID = "0x1"; // Mainnet
+
+        const TOKENS = {
+            WETH: { address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", decimals: 18, symbol: 'WETH' },
+            USDC: { address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", decimals: 6,  symbol: 'USDC' },
+            DAI:  { address: "0x6B175474E89094C44Da98b954EedeAC495271d0F", decimals: 18, symbol: 'DAI'  },
+            WBTC: { address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", decimals: 8,  symbol: 'WBTC' }
+        };
+        
+        const DEXS = {
+            Uniswap:   { router: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D" },
+            SushiSwap: { router: "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F" }
+            // Note: Curve and Dodo have complex routing and are omitted for this example.
+        };
+        
+        const UNISWAP_V2_ROUTER_ABI = [
+            "function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)"
+        ];
+
+        const ARBITRAGE_CONTRACT_ABI = [
+            "function startArbitrage(uint256 loanAmount, address[] calldata path, address[] calldata dexRouters) external"
+        ];
+
+        // --- STATE ---
+        let provider;
+        let signer;
+        let arbitrageContract;
+        let bestTrade = null;
+        let isAutoScanning = false;
+        let autoScanCycles = 0;
+        let alertSound;
+
+        // --- DOM ELEMENTS ---
+        const connectWalletBtn = document.getElementById('connectWalletBtn');
+        const scanBtn = document.getElementById('scanBtn');
+        const autoScanBtn = document.getElementById('autoScanBtn');
+        const executeTradeBtn = document.getElementById('executeTradeBtn');
+        const statusLog = document.getElementById('statusLog');
+        const progressBar = document.getElementById('progressBar');
+        const flashLoanAmountInput = document.getElementById('flashLoanAmount');
+        const minProfitPercentageInput = document.getElementById('minProfitPercentage');
+
+        // --- INITIALIZATION ---
+        window.addEventListener('load', () => {
+            log('App loaded. Please connect your wallet.');
+            document.getElementById('contractAddress').innerText = DEPLOYED_CONTRACT_ADDRESS;
+            document.getElementById('activeDEXs').innerText = Object.keys(DEXS).join(', ');
+            alertSound = new Tone.Synth({
+                oscillator: { type: 'square' },
+                envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
+            }).toDestination();
+        });
+        
+        // --- FUNCTIONS ---
+        
+        function log(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            statusLog.appendChild(entry);
+            statusLog.scrollTop = statusLog.scrollHeight;
+        }
+
+        async function connectWallet() {
+            if (typeof window.ethereum !== 'undefined') {
+                try {
+                    await window.ethereum.request({ method: 'eth_requestAccounts' });
+                    provider = new ethers.providers.Web3Provider(window.ethereum);
+                    
+                    const network = await provider.getNetwork();
+                    if (network.chainId.toString(16) !== ETHEREUM_CHAIN_ID.slice(2)) {
+                        log('Please connect to Ethereum Mainnet.', 'error');
+                        document.getElementById('networkStatus').innerText = "Wrong Network";
+                        return;
+                    }
+
+                    signer = provider.getSigner();
+                    arbitrageContract = new ethers.Contract(DEPLOYED_CONTRACT_ADDRESS, ARBITRAGE_CONTRACT_ABI, signer);
+
+                    const address = await signer.getAddress();
+                    connectWalletBtn.textContent = `Connected: ${address.substring(0,6)}...${address.substring(38)}`;
+                    document.getElementById('networkStatus').innerText = "Connected (Mainnet)";
+                    log('Wallet connected successfully.');
+
+                    updateGasPrice();
+                    setInterval(updateGasPrice, 15000); // Update every 15s
+                } catch (error) {
+                    log(`Wallet connection failed: ${error.message}`, 'error');
+                }
+            } else {
+                log('MetaMask is not installed.', 'error');
+            }
+        }
+        
+        async function updateGasPrice() {
+            if (!provider) return;
+            const gasPrice = await provider.getGasPrice();
+            document.getElementById('gasPrice').innerText = ethers.utils.formatUnits(gasPrice, 'gwei');
+        }
+
+        function generatePaths() {
+            const paths = [];
+            const tokens = Object.values(TOKENS).filter(t => t.symbol !== 'WETH');
+            const dexNames = Object.keys(DEXS);
+
+            for (let i = 0; i < tokens.length; i++) {
+                for (let j = 0; j < tokens.length; j++) {
+                    if (i === j) continue;
+                    
+                    for (let d1 = 0; d1 < dexNames.length; d1++) {
+                        for (let d2 = 0; d2 < dexNames.length; d2++) {
+                            for (let d3 = 0; d3 < dexNames.length; d3++) {
+                                paths.push({
+                                    path: [TOKENS.WETH.address, tokens[i].address, tokens[j].address, TOKENS.WETH.address],
+                                    symbols: ['WETH', tokens[i].symbol, tokens[j].symbol, 'WETH'],
+                                    dexes: [dexNames[d1], dexNames[d2], dexNames[d3]],
+                                    routers: [DEXS[dexNames[d1]].router, DEXS[dexNames[d2]].router, DEXS[dexNames[d3]].router]
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            log(`Generated ${paths.length} potential arbitrage paths.`);
+            return paths;
+        }
+        
+        async function scanOpportunities() {
+            if (!signer) {
+                log('Please connect wallet first.', 'error');
+                return;
+            }
+            
+            scanBtn.disabled = true;
+            autoScanBtn.disabled = true;
+            bestTrade = null;
+            updateBestTradeUI();
+            
+            const paths = generatePaths();
+            const loanAmount = ethers.utils.parseUnits(flashLoanAmountInput.value, 'ether');
+            const minProfit = ethers.utils.parseUnits(minProfitPercentageInput.value, 'ether').div(100).mul(loanAmount).div(ethers.utils.parseUnits("1", "ether"));
+
+            log(`Scanning... Loan: ${flashLoanAmountInput.value} WETH, Min Profit: ${ethers.utils.formatEther(minProfit)} WETH`);
+
+            let scannedCount = 0;
+
+            for (const opportunity of paths) {
+                try {
+                    const dexRouter = new ethers.Contract(opportunity.routers[0], UNISWAP_V2_ROUTER_ABI, provider);
+                    const amountsOut = await dexRouter.getAmountsOut(loanAmount, opportunity.path);
+                    const finalAmount = amountsOut[amountsOut.length - 1];
+
+                    if (finalAmount.gt(loanAmount.add(minProfit))) {
+                        const profit = finalAmount.sub(loanAmount);
+                        log(`Profitable opportunity found! Profit: ${ethers.utils.formatEther(profit)} WETH`, 'success');
+                        log(`Path: ${opportunity.symbols.join(' -> ')} on ${opportunity.dexes.join(', ')}`, 'success');
+
+                        if (!bestTrade || profit.gt(bestTrade.profit)) {
+                            bestTrade = { ...opportunity, profit };
+                            updateBestTradeUI();
+                            if(isAutoScanning) {
+                                alertSound.triggerAttackRelease("C4", "8n");
+                            }
+                        }
+                    }
+                } catch (error) {
+                    // This is expected for invalid paths or DEX issues.
+                }
+                
+                scannedCount++;
+                const progress = Math.round((scannedCount / paths.length) * 100);
+                progressBar.style.width = `${progress}%`;
+                progressBar.innerText = `${progress}%`;
+            }
+
+            if (!bestTrade) {
+                log('Scan complete. No profitable opportunities found.');
+            } else {
+                 log('Scan complete. Best opportunity identified.');
+            }
+            
+            scanBtn.disabled = false;
+            autoScanBtn.disabled = false;
+            if (isAutoScanning) {
+                autoScanCycles++;
+                if (!bestTrade && autoScanCycles % 3 === 0) {
+                    adjustAutoScanParams();
+                }
+                setTimeout(scanOpportunities, 5000); // Wait 5s before next scan
+            }
+        }
+        
+        function adjustAutoScanParams() {
+            log("Auto-adjusting parameters after 3 cycles...", 'info');
+            let currentProfit = parseFloat(minProfitPercentageInput.value);
+            minProfitPercentageInput.value = Math.max(0.01, currentProfit * 0.9).toFixed(2); // Lower by 10%
+            
+            let currentLoan = parseFloat(flashLoanAmountInput.value);
+            flashLoanAmountInput.value = (currentLoan * 1.1).toFixed(2); // Increase by 10%
+
+            log(`New Min Profit: ${minProfitPercentageInput.value}%, New Loan Amount: ${flashLoanAmountInput.value} WETH`, 'info');
+        }
+
+        function updateBestTradeUI() {
+            if (bestTrade) {
+                document.getElementById('bestPath').innerText = bestTrade.symbols.join(' -> ');
+                document.getElementById('bestProfit').innerText = `${ethers.utils.formatEther(bestTrade.profit)} WETH`;
+                executeTradeBtn.disabled = false;
+            } else {
+                document.getElementById('bestPath').innerText = 'N/A';
+                document.getElementById('bestProfit').innerText = 'N/A';
+                executeTradeBtn.disabled = true;
+            }
+        }
+
+        async function executeTrade() {
+            if (!bestTrade || !arbitrageContract) {
+                log('No trade to execute or contract not ready.', 'error');
+                return;
+            }
+            
+            log('Executing best trade...', 'info');
+            executeTradeBtn.disabled = true;
+
+            try {
+                const loanAmount = ethers.utils.parseUnits(flashLoanAmountInput.value, 'ether');
+                const tx = await arbitrageContract.startArbitrage(loanAmount, bestTrade.path, bestTrade.routers);
+                
+                log(`Transaction sent: ${tx.hash}`, 'info');
+                await tx.wait();
+                log('Trade executed successfully!', 'success');
+
+                bestTrade = null;
+                updateBestTradeUI();
+
+            } catch (error) {
+                log(`Trade execution failed: ${error.message}`, 'error');
+                if (error.data && error.data.message) {
+                    log(`Reason: ${error.data.message}`, 'error');
+                }
+            } finally {
+                executeTradeBtn.disabled = false;
+            }
+        }
+
+        function toggleAutoScan() {
+            if (isAutoScanning) {
+                isAutoScanning = false;
+                autoScanBtn.textContent = 'Auto-Scan';
+                log('Auto-scanning stopped.');
+                autoScanCycles = 0;
+            } else {
+                isAutoScanning = true;
+                autoScanBtn.textContent = 'Stop Auto-Scan';
+                log('Auto-scanning started...');
+                scanOpportunities();
+            }
+        }
+
+        // --- EVENT LISTENERS ---
+        connectWalletBtn.addEventListener('click', connectWallet);
+        scanBtn.addEventListener('click', scanOpportunities);
+        autoScanBtn.addEventListener('click', toggleAutoScan);
+        executeTradeBtn.addEventListener('click', executeTrade);
+    </script>
+</body>
+</html>
